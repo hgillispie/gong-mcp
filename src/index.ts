@@ -284,6 +284,11 @@ async function runServer() {
   const port = process.env.PORT;
 
   if (port) {
+    if (!MCP_API_KEY) {
+      console.error("Error: MCP_API_KEY is required when running in HTTP mode");
+      process.exit(1);
+    }
+
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => crypto.randomUUID(),
     });
@@ -298,14 +303,12 @@ async function runServer() {
       }
 
       if (url.pathname === '/mcp') {
-        if (MCP_API_KEY) {
-          const auth = req.headers['authorization'] ?? '';
-          const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
-          if (token !== MCP_API_KEY) {
-            res.writeHead(401, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: 'Unauthorized' }));
-            return;
-          }
+        const auth = req.headers['authorization'] ?? '';
+        const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+        if (token !== MCP_API_KEY) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Unauthorized' }));
+          return;
         }
         await transport.handleRequest(req, res);
         return;

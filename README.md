@@ -20,7 +20,7 @@ An MCP server that provides access to Gong's API for retrieving call recordings 
 |---|---|---|
 | `GONG_ACCESS_KEY` | Yes | Gong API access key |
 | `GONG_ACCESS_SECRET` | Yes | Gong API access secret |
-| `MCP_API_KEY` | No (recommended for remote) | Shared secret for authenticating MCP clients. When set, all requests to `/mcp` must include `Authorization: Bearer <key>`. |
+| `MCP_API_KEY` | Yes (HTTP mode) | Shared secret for authenticating MCP clients. All requests to `/mcp` must include `Authorization: Bearer <key>`. |
 | `PORT` | No | When set, starts an HTTP server instead of stdio. Railway sets this automatically. |
 
 ## Setup
