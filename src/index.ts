@@ -351,100 +351,132 @@ const TOOLS: Tool[] = [
   },
 ];
 
-// Server implementation
-const server = new Server(
-  { name: "gong-mcp", version: "0.2.0" },
-  { capabilities: { tools: {} } },
-);
+function createMcpServer(): Server {
+  const server = new Server(
+    { name: "gong-mcp", version: "0.2.0" },
+    { capabilities: { tools: {} } },
+  );
 
-server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
 
-server.setRequestHandler(CallToolRequestSchema, async (request: { params: { name: string; arguments?: unknown } }) => {
-  try {
-    const { name, arguments: args } = request.params;
-    const a = (args ?? {}) as Record<string, unknown>;
+  server.setRequestHandler(CallToolRequestSchema, async (request: { params: { name: string; arguments?: unknown } }) => {
+    try {
+      const { name, arguments: args } = request.params;
+      const a = (args ?? {}) as Record<string, unknown>;
 
-    let response: unknown;
+      let response: unknown;
 
-    switch (name) {
-      case "list_calls":
-        response = await gongClient.listCalls(
-          a.fromDateTime as string | undefined,
-          a.toDateTime as string | undefined,
-        );
-        break;
+      switch (name) {
+        case "list_calls":
+          response = await gongClient.listCalls(
+            a.fromDateTime as string | undefined,
+            a.toDateTime as string | undefined,
+          );
+          break;
 
-      case "get_call_details":
-        if (!Array.isArray(a.callIds)) throw new Error("callIds must be an array of strings");
-        response = await gongClient.getCallDetails(a.callIds as string[]);
-        break;
+        case "get_call_details":
+          if (!Array.isArray(a.callIds)) throw new Error("callIds must be an array of strings");
+          response = await gongClient.getCallDetails(a.callIds as string[]);
+          break;
 
-      case "retrieve_transcripts":
-        if (!Array.isArray(a.callIds)) throw new Error("callIds must be an array of strings");
-        response = await gongClient.retrieveTranscripts(a.callIds as string[]);
-        break;
+        case "retrieve_transcripts":
+          if (!Array.isArray(a.callIds)) throw new Error("callIds must be an array of strings");
+          response = await gongClient.retrieveTranscripts(a.callIds as string[]);
+          break;
 
-      case "list_users":
-        response = await gongClient.listUsers();
-        break;
+        case "list_users":
+          response = await gongClient.listUsers();
+          break;
 
-      case "get_user":
-        if (typeof a.userId !== "string") throw new Error("userId is required");
-        response = await gongClient.getUser(a.userId);
-        break;
+        case "get_user":
+          if (typeof a.userId !== "string") throw new Error("userId is required");
+          response = await gongClient.getUser(a.userId);
+          break;
 
-      case "get_scorecard_definitions":
-        response = await gongClient.getScorecardDefinitions();
-        break;
+        case "get_scorecard_definitions":
+          response = await gongClient.getScorecardDefinitions();
+          break;
 
-      case "get_answered_scorecards":
-        response = await gongClient.getAnsweredScorecards({
-          callFromDate: a.callFromDate as string | undefined,
-          callToDate: a.callToDate as string | undefined,
-          scorecardIds: a.scorecardIds as string[] | undefined,
-          reviewedUserIds: a.reviewedUserIds as string[] | undefined,
-        });
-        break;
+        case "get_answered_scorecards":
+          response = await gongClient.getAnsweredScorecards({
+            callFromDate: a.callFromDate as string | undefined,
+            callToDate: a.callToDate as string | undefined,
+            scorecardIds: a.scorecardIds as string[] | undefined,
+            reviewedUserIds: a.reviewedUserIds as string[] | undefined,
+          });
+          break;
 
-      case "get_interaction_stats":
-        if (typeof a.fromDate !== "string" || typeof a.toDate !== "string")
-          throw new Error("fromDate and toDate are required");
-        response = await gongClient.getInteractionStats({
-          fromDate: a.fromDate,
-          toDate: a.toDate,
-          userIds: a.userIds as string[] | undefined,
-        });
-        break;
+        case "get_interaction_stats":
+          if (typeof a.fromDate !== "string" || typeof a.toDate !== "string")
+            throw new Error("fromDate and toDate are required");
+          response = await gongClient.getInteractionStats({
+            fromDate: a.fromDate,
+            toDate: a.toDate,
+            userIds: a.userIds as string[] | undefined,
+          });
+          break;
 
-      case "get_aggregate_activity":
-        if (typeof a.fromDate !== "string" || typeof a.toDate !== "string")
-          throw new Error("fromDate and toDate are required");
-        response = await gongClient.getAggregateActivity({
-          fromDate: a.fromDate,
-          toDate: a.toDate,
-          userIds: a.userIds as string[] | undefined,
-        });
-        break;
+        case "get_aggregate_activity":
+          if (typeof a.fromDate !== "string" || typeof a.toDate !== "string")
+            throw new Error("fromDate and toDate are required");
+          response = await gongClient.getAggregateActivity({
+            fromDate: a.fromDate,
+            toDate: a.toDate,
+            userIds: a.userIds as string[] | undefined,
+          });
+          break;
 
-      default:
-        return {
-          content: [{ type: "text", text: `Unknown tool: ${name}` }],
-          isError: true,
-        };
+        default:
+          return {
+            content: [{ type: "text", text: `Unknown tool: ${name}` }],
+            isError: true,
+          };
+      }
+
+      return {
+        content: [{ type: "text", text: JSON.stringify(response, null, 2) }],
+        isError: false,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        content: [{ type: "text", text: `Error: ${message}` }],
+        isError: true,
+      };
     }
+  });
 
-    return {
-      content: [{ type: "text", text: JSON.stringify(response, null, 2) }],
-      isError: false,
-    };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return {
-      content: [{ type: "text", text: `Error: ${message}` }],
-      isError: true,
-    };
+  return server;
+}
+
+// Session management for HTTP mode
+const sessions = new Map<string, { transport: StreamableHTTPServerTransport; server: Server }>();
+
+async function handleMcpRequest(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) {
+  const sessionId = (req.headers['mcp-session-id'] as string | undefined)?.trim();
+
+  if (sessionId && sessions.has(sessionId)) {
+    await sessions.get(sessionId)!.transport.handleRequest(req, res);
+    return;
   }
-});
+
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: () => crypto.randomUUID(),
+  });
+  const server = createMcpServer();
+  await server.connect(transport);
+
+  transport.onclose = () => {
+    const sid = transport.sessionId;
+    if (sid) sessions.delete(sid);
+  };
+
+  await transport.handleRequest(req, res);
+
+  if (transport.sessionId) {
+    sessions.set(transport.sessionId, { transport, server });
+  }
+}
 
 async function runServer() {
   const port = process.env.PORT;
@@ -455,10 +487,6 @@ async function runServer() {
       process.exit(1);
     }
 
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: () => crypto.randomUUID(),
-    });
-
     const serverUrl = process.env.SERVER_URL || `http://localhost:${port}`;
 
     const httpServer = createServer(async (req, res) => {
@@ -468,13 +496,11 @@ async function runServer() {
         res.end(JSON.stringify(body));
       };
 
-      // Health check
       if (url.pathname === '/health') {
         json(200, { status: 'ok' });
         return;
       }
 
-      // RFC 9728: Protected Resource Metadata
       if (url.pathname === '/.well-known/oauth-protected-resource') {
         json(200, {
           resource: `${serverUrl}/mcp`,
@@ -484,7 +510,6 @@ async function runServer() {
         return;
       }
 
-      // RFC 8414: Authorization Server Metadata
       if (url.pathname === '/.well-known/oauth-authorization-server') {
         json(200, {
           issuer: serverUrl,
@@ -496,7 +521,6 @@ async function runServer() {
         return;
       }
 
-      // Token endpoint
       if (url.pathname === '/oauth/token' && req.method === 'POST') {
         const body = await readBody(req);
         const params = parseFormBody(body);
@@ -533,7 +557,6 @@ async function runServer() {
         return;
       }
 
-      // MCP endpoint with OAuth token validation
       if (url.pathname === '/mcp') {
         const auth = req.headers['authorization'] ?? '';
         const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
@@ -545,7 +568,8 @@ async function runServer() {
           res.end(JSON.stringify({ error: 'invalid_token' }));
           return;
         }
-        await transport.handleRequest(req, res);
+
+        await handleMcpRequest(req, res);
         return;
       }
 
@@ -553,11 +577,11 @@ async function runServer() {
       res.end('Not found');
     });
 
-    await server.connect(transport);
     httpServer.listen(Number(port), () => {
       console.error(`Gong MCP server running on http://0.0.0.0:${port}/mcp`);
     });
   } else {
+    const server = createMcpServer();
     const transport = new StdioServerTransport();
     await server.connect(transport);
   }
