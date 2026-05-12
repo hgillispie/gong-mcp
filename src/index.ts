@@ -23,11 +23,58 @@ dotenv.config();
 const GONG_API_URL = 'https://api.gong.io/v2';
 const GONG_ACCESS_KEY = process.env.GONG_ACCESS_KEY;
 const GONG_ACCESS_SECRET = process.env.GONG_ACCESS_SECRET;
-const MCP_API_KEY = process.env.MCP_API_KEY;
 
 if (!GONG_ACCESS_KEY || !GONG_ACCESS_SECRET) {
   console.error("Error: GONG_ACCESS_KEY and GONG_ACCESS_SECRET environment variables are required");
   process.exit(1);
+}
+
+// OAuth Client Credentials
+const clientCredentials = new Map<string, string>();
+if (process.env.MCP_CLIENT_ID && process.env.MCP_CLIENT_SECRET) {
+  clientCredentials.set(process.env.MCP_CLIENT_ID, process.env.MCP_CLIENT_SECRET);
+}
+
+const TOKEN_TTL_SECONDS = 3600;
+const activeTokens = new Map<string, { clientId: string; expiresAt: number }>();
+
+function issueToken(clientId: string): { access_token: string; token_type: string; expires_in: number } {
+  const token = crypto.randomBytes(32).toString('hex');
+  activeTokens.set(token, { clientId, expiresAt: Date.now() + TOKEN_TTL_SECONDS * 1000 });
+  return { access_token: token, token_type: 'Bearer', expires_in: TOKEN_TTL_SECONDS };
+}
+
+function validateToken(token: string): boolean {
+  const entry = activeTokens.get(token);
+  if (!entry) return false;
+  if (Date.now() > entry.expiresAt) {
+    activeTokens.delete(token);
+    return false;
+  }
+  return true;
+}
+
+function authenticateClient(clientId: string, clientSecret: string): boolean {
+  const stored = clientCredentials.get(clientId);
+  return stored !== undefined && stored === clientSecret;
+}
+
+function parseFormBody(body: string): Record<string, string> {
+  const params: Record<string, string> = {};
+  for (const pair of body.split('&')) {
+    const [key, val] = pair.split('=').map(decodeURIComponent);
+    if (key) params[key] = val ?? '';
+  }
+  return params;
+}
+
+function readBody(req: import('node:http').IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let data = '';
+    req.on('data', (chunk: Buffer) => { data += chunk.toString(); });
+    req.on('end', () => resolve(data));
+    req.on('error', reject);
+  });
 }
 
 // Gong API Client
@@ -403,8 +450,8 @@ async function runServer() {
   const port = process.env.PORT;
 
   if (port) {
-    if (!MCP_API_KEY) {
-      console.error("Error: MCP_API_KEY is required when running in HTTP mode");
+    if (clientCredentials.size === 0) {
+      console.error("Error: MCP_CLIENT_ID and MCP_CLIENT_SECRET are required when running in HTTP mode");
       process.exit(1);
     }
 
@@ -421,12 +468,52 @@ async function runServer() {
         return;
       }
 
+      if (url.pathname === '/oauth/token' && req.method === 'POST') {
+        const body = await readBody(req);
+        const params = parseFormBody(body);
+
+        if (params.grant_type !== 'client_credentials') {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'unsupported_grant_type' }));
+          return;
+        }
+
+        let clientId: string | undefined;
+        let clientSecret: string | undefined;
+
+        const authHeader = req.headers['authorization'] ?? '';
+        if (authHeader.startsWith('Basic ')) {
+          const decoded = Buffer.from(authHeader.slice(6), 'base64').toString();
+          const colonIndex = decoded.indexOf(':');
+          if (colonIndex > 0) {
+            clientId = decoded.slice(0, colonIndex);
+            clientSecret = decoded.slice(colonIndex + 1);
+          }
+        }
+
+        if (!clientId) {
+          clientId = params.client_id;
+          clientSecret = params.client_secret;
+        }
+
+        if (!clientId || !clientSecret || !authenticateClient(clientId, clientSecret)) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'invalid_client' }));
+          return;
+        }
+
+        const tokenResponse = issueToken(clientId);
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify(tokenResponse));
+        return;
+      }
+
       if (url.pathname === '/mcp') {
         const auth = req.headers['authorization'] ?? '';
         const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
-        if (token !== MCP_API_KEY) {
+        if (!validateToken(token)) {
           res.writeHead(401, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Unauthorized' }));
+          res.end(JSON.stringify({ error: 'invalid_token' }));
           return;
         }
         await transport.handleRequest(req, res);

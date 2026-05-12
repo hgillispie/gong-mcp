@@ -11,7 +11,7 @@ An MCP server that provides access to Gong's API for call data, transcripts, use
 - Pull scorecard definitions and completed reviews
 - Get interaction stats and aggregate activity metrics
 - Runs locally (stdio) or as a remote HTTP server (Railway, Docker, etc.)
-- Bearer token authentication for remote deployments
+- OAuth 2.0 Client Credentials authentication for remote deployments
 
 ## Prerequisites
 
@@ -24,7 +24,8 @@ An MCP server that provides access to Gong's API for call data, transcripts, use
 |---|---|---|
 | `GONG_ACCESS_KEY` | Yes | Gong API access key |
 | `GONG_ACCESS_SECRET` | Yes | Gong API access secret |
-| `MCP_API_KEY` | Yes (HTTP mode) | Shared secret for authenticating MCP clients. All requests to `/mcp` must include `Authorization: Bearer <key>`. |
+| `MCP_CLIENT_ID` | Yes (HTTP mode) | OAuth client ID for MCP client authentication |
+| `MCP_CLIENT_SECRET` | Yes (HTTP mode) | OAuth client secret for MCP client authentication |
 | `PORT` | No | When set, starts an HTTP server instead of stdio. Railway sets this automatically. |
 
 ## Setup
@@ -60,13 +61,35 @@ For use as a local MCP server:
 3. Add these environment variables in Railway's dashboard under **Variables**:
    - `GONG_ACCESS_KEY` — your Gong API key
    - `GONG_ACCESS_SECRET` — your Gong API secret
-   - `MCP_API_KEY` — a shared secret for client auth (generate one with `openssl rand -hex 32`)
+   - `MCP_CLIENT_ID` — OAuth client ID (generate with `openssl rand -hex 16`)
+   - `MCP_CLIENT_SECRET` — OAuth client secret (generate with `openssl rand -hex 32`)
 4. Railway auto-sets `PORT` and deploys using the Dockerfile
-5. Your MCP endpoint will be at `https://<your-app>.railway.app/mcp`
+5. Your server will be at `https://<your-app>.railway.app`
 
-### Connecting to the Remote Server
+### Authentication
 
-Share the Railway URL and `MCP_API_KEY` with your team. Each person adds this to their MCP client config:
+The server uses OAuth 2.0 Client Credentials. Clients first exchange their credentials for a short-lived access token (1 hour TTL), then use that token for MCP requests.
+
+**1. Get an access token:**
+
+```bash
+curl -X POST https://<your-app>.railway.app/oauth/token \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "grant_type=client_credentials&client_id=<ID>&client_secret=<SECRET>"
+```
+
+Response:
+```json
+{
+  "access_token": "...",
+  "token_type": "Bearer",
+  "expires_in": 3600
+}
+```
+
+**2. Use the token with MCP requests:**
+
+Share the Railway URL and client credentials with your team. MCP clients that support OAuth will handle the token exchange automatically. For manual config:
 
 ```json
 {
@@ -75,7 +98,7 @@ Share the Railway URL and `MCP_API_KEY` with your team. Each person adds this to
       "type": "streamable-http",
       "url": "https://<your-app>.railway.app/mcp",
       "headers": {
-        "Authorization": "Bearer <MCP_API_KEY>"
+        "Authorization": "Bearer <access_token>"
       }
     }
   }
