@@ -2,6 +2,7 @@
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -10,6 +11,7 @@ import {
 import axios from 'axios';
 import dotenv from 'dotenv';
 import crypto from 'crypto';
+import { createServer } from 'node:http';
 
 // Redirect all console output to stderr
 const originalConsole = { ...console };
@@ -22,8 +24,8 @@ dotenv.config();
 const GONG_API_URL = 'https://api.gong.io/v2';
 const GONG_ACCESS_KEY = process.env.GONG_ACCESS_KEY;
 const GONG_ACCESS_SECRET = process.env.GONG_ACCESS_SECRET;
+const MCP_API_KEY = process.env.MCP_API_KEY;
 
-// Check for required environment variables
 if (!GONG_ACCESS_KEY || !GONG_ACCESS_SECRET) {
   console.error("Error: GONG_ACCESS_KEY and GONG_ACCESS_SECRET environment variables are required");
   process.exit(1);
@@ -279,8 +281,48 @@ server.setRequestHandler(CallToolRequestSchema, async (request: { params: { name
 });
 
 async function runServer() {
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+  const port = process.env.PORT;
+
+  if (port) {
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: () => crypto.randomUUID(),
+    });
+
+    const httpServer = createServer(async (req, res) => {
+      const url = new URL(req.url || '/', `http://localhost:${port}`);
+
+      if (url.pathname === '/health') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'ok' }));
+        return;
+      }
+
+      if (url.pathname === '/mcp') {
+        if (MCP_API_KEY) {
+          const auth = req.headers['authorization'] ?? '';
+          const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+          if (token !== MCP_API_KEY) {
+            res.writeHead(401, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Unauthorized' }));
+            return;
+          }
+        }
+        await transport.handleRequest(req, res);
+        return;
+      }
+
+      res.writeHead(404);
+      res.end('Not found');
+    });
+
+    await server.connect(transport);
+    httpServer.listen(Number(port), () => {
+      console.error(`Gong MCP server running on http://0.0.0.0:${port}/mcp`);
+    });
+  } else {
+    const transport = new StdioServerTransport();
+    await server.connect(transport);
+  }
 }
 
 runServer().catch((error) => {

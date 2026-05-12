@@ -1,121 +1,100 @@
 # Gong MCP Server
 
-A Model Context Protocol (MCP) server that provides access to Gong's API for retrieving call recordings and transcripts. This server allows Claude to interact with Gong data through a standardized interface.
+An MCP server that provides access to Gong's API for retrieving call recordings and transcripts.
 
 ## Features
 
 - List Gong calls with optional date range filtering
 - Retrieve detailed transcripts for specific calls
-- Secure authentication using Gong's API credentials
-- Standardized MCP interface for easy integration with Claude
+- Runs locally (stdio) or as a remote HTTP server (Railway, Docker, etc.)
+- Bearer token authentication for remote deployments
 
 ## Prerequisites
 
-- Node.js 18 or higher
-- Docker (optional, for containerized deployment)
+- Node.js 18+
 - Gong API credentials (Access Key and Secret)
 
-## Installation
+## Environment Variables
 
-### Local Development
+| Variable | Required | Description |
+|---|---|---|
+| `GONG_ACCESS_KEY` | Yes | Gong API access key |
+| `GONG_ACCESS_SECRET` | Yes | Gong API access secret |
+| `MCP_API_KEY` | No (recommended for remote) | Shared secret for authenticating MCP clients. When set, all requests to `/mcp` must include `Authorization: Bearer <key>`. |
+| `PORT` | No | When set, starts an HTTP server instead of stdio. Railway sets this automatically. |
 
-1. Clone the repository
-2. Install dependencies:
-   ```bash
-   npm install
-   ```
-3. Build the project:
-   ```bash
-   npm run build
-   ```
+## Setup
 
-### Docker
-
-Build the container:
 ```bash
-docker build -t gong-mcp .
+npm install
+npm run build
 ```
 
-## Configuring Claude
+## Running Locally (stdio)
 
-1. Open Claude Desktop settings
-2. Navigate to the MCP Servers section
-3. Add a new server with the following configuration:
+For use with Claude Desktop or Claude Code as a local MCP server:
 
 ```json
 {
-  "command": "docker",
-  "args": [
-    "run",
-    "-it",
-    "--rm",
-    "gong-mcp"
-  ],
-  "env": {
-    "GONG_ACCESS_KEY": "your_access_key_here",
-    "GONG_ACCESS_SECRET": "your_access_secret_here"
-  }
-}
-```
-
-4. Replace the placeholder credentials with your actual Gong API credentials from your `.env` file
-
-## Available Tools
-
-### List Calls
-
-Retrieves a list of Gong calls with optional date range filtering.
-
-```typescript
-{
-  name: "list_calls",
-  description: "List Gong calls with optional date range filtering. Returns call details including ID, title, start/end times, participants, and duration.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      fromDateTime: {
-        type: "string",
-        description: "Start date/time in ISO format (e.g. 2024-03-01T00:00:00Z)"
-      },
-      toDateTime: {
-        type: "string",
-        description: "End date/time in ISO format (e.g. 2024-03-31T23:59:59Z)"
+  "mcpServers": {
+    "gong": {
+      "command": "node",
+      "args": ["/path/to/gong-mcp/dist/index.js"],
+      "env": {
+        "GONG_ACCESS_KEY": "your_access_key",
+        "GONG_ACCESS_SECRET": "your_access_secret"
       }
     }
   }
 }
 ```
 
-### Retrieve Transcripts
+## Deploying to Railway
 
-Retrieves detailed transcripts for specified call IDs.
+1. Push this repo to GitHub
+2. Create a new project in Railway and connect the repo
+3. Add these environment variables in Railway's dashboard under **Variables**:
+   - `GONG_ACCESS_KEY` — your Gong API key
+   - `GONG_ACCESS_SECRET` — your Gong API secret
+   - `MCP_API_KEY` — a shared secret for client auth (generate one with `openssl rand -hex 32`)
+4. Railway auto-sets `PORT` and deploys using the Dockerfile
+5. Your MCP endpoint will be at `https://<your-app>.railway.app/mcp`
 
-```typescript
+### Connecting to the Remote Server
+
+Share the Railway URL and `MCP_API_KEY` with your team. Each person adds this to their MCP client config:
+
+```json
 {
-  name: "retrieve_transcripts",
-  description: "Retrieve transcripts for specified call IDs. Returns detailed transcripts including speaker IDs, topics, and timestamped sentences.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      callIds: {
-        type: "array",
-        items: { type: "string" },
-        description: "Array of Gong call IDs to retrieve transcripts for"
+  "mcpServers": {
+    "gong": {
+      "type": "streamable-http",
+      "url": "https://<your-app>.railway.app/mcp",
+      "headers": {
+        "Authorization": "Bearer <MCP_API_KEY>"
       }
-    },
-    required: ["callIds"]
+    }
   }
 }
 ```
 
+## Available Tools
+
+### list_calls
+
+List Gong calls with optional date range filtering. Returns call details including ID, title, start/end times, participants, and duration.
+
+**Parameters:**
+- `fromDateTime` (string, optional) — Start date/time in ISO format (e.g. `2024-03-01T00:00:00Z`)
+- `toDateTime` (string, optional) — End date/time in ISO format (e.g. `2024-03-31T23:59:59Z`)
+
+### retrieve_transcripts
+
+Retrieve transcripts for specified call IDs. Returns detailed transcripts including speaker IDs, topics, and timestamped sentences.
+
+**Parameters:**
+- `callIds` (string[], required) — Array of Gong call IDs to retrieve transcripts for
+
 ## License
 
 MIT License - see LICENSE file for details
-
-## Contributing
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request 
