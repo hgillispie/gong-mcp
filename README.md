@@ -32,7 +32,7 @@ npm run build
 
 ## Running Locally (stdio)
 
-For use with Claude Desktop or Claude Code as a local MCP server:
+For use as a local MCP server:
 
 ```json
 {
