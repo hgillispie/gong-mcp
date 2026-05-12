@@ -145,6 +145,7 @@ class GongClient {
     const to = opts.toDateTime ?? new Date().toISOString();
 
     const titleMatches: GongCallSummary[] = [];
+    const allCalls: GongCallSummary[] = [];
     let cursor: string | undefined;
     let totalScanned = 0;
 
@@ -154,6 +155,7 @@ class GongClient {
 
       const data = await this.get<{ calls: GongCallSummary[]; records: { cursor?: string } }>('/calls', params);
       totalScanned += data.calls.length;
+      allCalls.push(...data.calls);
 
       if (terms.length > 0) {
         for (const call of data.calls) {
@@ -172,20 +174,14 @@ class GongClient {
     titleMatches.sort((a, b) => (b.started ?? '').localeCompare(a.started ?? ''));
 
     if (terms.length > 0 && titleMatches.length === 0) {
-      const recentIds: string[] = [];
-      cursor = undefined;
-      for (let page = 0; page < MAX_SEARCH_PAGES && recentIds.length < 500; page++) {
-        const params: Record<string, string> = { fromDateTime: from, toDateTime: to };
-        if (cursor) params.cursor = cursor;
-        const data = await this.get<{ calls: GongCallSummary[]; records: { cursor?: string } }>('/calls', params);
-        recentIds.push(...data.calls.map(c => c.id));
-        if (!data.records.cursor) break;
-        cursor = data.records.cursor;
-      }
+      // Deep search: check parties/companies. Sort newest-first so we find
+      // recent matches before hitting the batch limit.
+      allCalls.sort((a, b) => (b.started ?? '').localeCompare(a.started ?? ''));
+      const idsToSearch = allCalls.map(c => c.id);
 
       const partyMatches: GongCallSummary[] = [];
-      for (let i = 0; i < recentIds.length && partyMatches.length < maxResults; i += 50) {
-        const batch = recentIds.slice(i, i + 50);
+      for (let i = 0; i < idsToSearch.length && partyMatches.length < maxResults; i += 50) {
+        const batch = idsToSearch.slice(i, i + 50);
         const details = await this.post<{ calls: Array<{ metaData: GongCallSummary; parties?: Array<{ name?: string; emailAddress?: string; company?: string }> }> }>('/calls/extensive', {
           filter: { callIds: batch },
           contentSelector: { exposedFields: { parties: true } },
