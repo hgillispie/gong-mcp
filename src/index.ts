@@ -289,11 +289,22 @@ class GongClient {
   }
 
   async searchUsers(query?: string): Promise<GongUser[]> {
-    const data = await this.get<{ users: GongUser[] }>('/users');
-    if (!query) return data.users;
+    const allUsers: GongUser[] = [];
+    let cursor: string | undefined;
+
+    for (let page = 0; page < 20; page++) {
+      const params: Record<string, string> = {};
+      if (cursor) params.cursor = cursor;
+      const data = await this.get<{ users: GongUser[]; records: { cursor?: string } }>('/users', params);
+      allUsers.push(...data.users);
+      if (!data.records?.cursor) break;
+      cursor = data.records.cursor;
+    }
+
+    if (!query) return allUsers;
 
     const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
-    return data.users.filter(u => {
+    return allUsers.filter(u => {
       const searchable = `${u.firstName ?? ''} ${u.lastName ?? ''} ${u.emailAddress ?? ''}`.toLowerCase();
       return terms.every(t => searchable.includes(t));
     });
