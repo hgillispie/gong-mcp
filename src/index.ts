@@ -138,8 +138,8 @@ class GongClient {
     fromDateTime?: string;
     toDateTime?: string;
     maxResults?: number;
-  }): Promise<{ matches: GongCallSummary[]; totalScanned: number; deepSearchIds?: string[] }> {
-    const maxResults = opts.maxResults ?? 10;
+  }): Promise<{ matches: unknown[]; totalScanned: number }> {
+    const maxResults = opts.maxResults ?? 20;
     const terms = (opts.query ?? '').toLowerCase().split(/\s+/).filter(Boolean);
     const from = opts.fromDateTime ?? new Date(Date.now() - 90 * 86400000).toISOString();
     const to = opts.toDateTime ?? new Date().toISOString();
@@ -169,12 +169,9 @@ class GongClient {
       cursor = data.records.cursor;
     }
 
-    // Sort newest first
     titleMatches.sort((a, b) => (b.started ?? '').localeCompare(a.started ?? ''));
 
     if (terms.length > 0 && titleMatches.length === 0) {
-      // No title matches — collect IDs for deep search (parties/content)
-      // Re-scan and grab the most recent call IDs for a deeper check
       const recentIds: string[] = [];
       cursor = undefined;
       for (let page = 0; page < MAX_SEARCH_PAGES && recentIds.length < 500; page++) {
@@ -186,7 +183,6 @@ class GongClient {
         cursor = data.records.cursor;
       }
 
-      // Search parties in batches
       const partyMatches: GongCallSummary[] = [];
       for (let i = 0; i < recentIds.length && partyMatches.length < maxResults; i += 50) {
         const batch = recentIds.slice(i, i + 50);
@@ -207,10 +203,66 @@ class GongClient {
       }
 
       partyMatches.sort((a, b) => (b.started ?? '').localeCompare(a.started ?? ''));
-      return { matches: partyMatches.slice(0, maxResults), totalScanned };
+      return this.enrichSearchResults(partyMatches.slice(0, maxResults), totalScanned);
     }
 
-    return { matches: titleMatches.slice(0, maxResults), totalScanned };
+    return this.enrichSearchResults(titleMatches.slice(0, maxResults), totalScanned);
+  }
+
+  private async enrichSearchResults(
+    calls: GongCallSummary[],
+    totalScanned: number,
+  ): Promise<{ matches: unknown[]; totalScanned: number }> {
+    if (calls.length === 0) return { matches: [], totalScanned };
+
+    const ids = calls.map(c => c.id);
+    const details = await this.post<{
+      calls: Array<{
+        metaData: GongCallSummary;
+        parties?: Array<{ name?: string; emailAddress?: string; company?: string; affiliation?: string; title?: string }>;
+        content?: { brief?: string };
+      }>;
+    }>('/calls/extensive', {
+      filter: { callIds: ids },
+      contentSelector: {
+        exposedFields: {
+          content: { brief: true },
+          parties: true,
+        },
+      },
+    });
+
+    const detailMap = new Map<string, { parties: unknown[]; brief: string }>();
+    for (const call of details.calls) {
+      const parties = (call.parties ?? []).map(p => ({
+        name: p.name,
+        email: p.emailAddress,
+        company: p.company,
+        affiliation: p.affiliation,
+        title: p.title,
+      }));
+      detailMap.set(call.metaData.id, {
+        parties,
+        brief: call.content?.brief ?? '',
+      });
+    }
+
+    const enriched = calls.map(call => {
+      const extra = detailMap.get(call.id);
+      return {
+        id: call.id,
+        title: call.title,
+        started: call.started,
+        duration: call.duration,
+        url: call.url,
+        direction: call.direction,
+        scope: call.scope,
+        participants: extra?.parties ?? [],
+        brief: extra?.brief ?? '',
+      };
+    });
+
+    return { matches: enriched, totalScanned };
   }
 
   async getCallDetails(callIds: string[]) {
@@ -225,7 +277,7 @@ class GongClient {
           },
           collaboration: { publicComments: true },
           parties: true,
-          interaction: { interactionStats: true, video: true, questions: true, speakers: true },
+          interaction: { interactionStats: true, video: true, speakers: true, questions: true },
           media: true,
         },
       },
@@ -278,7 +330,7 @@ const gongClient = new GongClient(GONG_ACCESS_KEY, GONG_ACCESS_SECRET);
 const TOOLS: Tool[] = [
   {
     name: "search_calls",
-    description: "Search Gong calls by keyword. Matches call titles first, then falls back to searching participant names, emails, and company names. Use this to find calls by account name, person, or topic. Returns call metadata sorted newest-first. Defaults to last 90 days if no date range is given. To get full details for a found call, pass its ID to get_call_details.",
+    description: "Search Gong calls by keyword. Returns results with participants, brief summary, and metadata — enough to triage which calls matter. Matches titles first, then falls back to participant names/emails/companies. Sorted newest-first. Defaults to last 90 days. For full key points, outlines, and questions, pass call IDs to get_call_details. For meeting prep, search the account name and review all returned calls.",
     inputSchema: {
       type: "object",
       properties: {
@@ -296,14 +348,14 @@ const TOOLS: Tool[] = [
         },
         maxResults: {
           type: "number",
-          description: "Maximum number of calls to return (default 10, max 50)",
+          description: "Maximum number of calls to return (default 20, max 50)",
         },
       },
     },
   },
   {
     name: "get_call_details",
-    description: "Get rich details for one or more calls by ID: participants, action items, key points, topics, trackers, talk ratios, questions, and comments. Use search_calls first to find call IDs, then pass them here. This is the primary tool for answering questions about what happened on a call.",
+    description: "Get rich details for one or more calls by ID: participants, key points, briefs, outlines (section-by-section breakdown), topics, trackers, questions asked (with text), and comments. Use search_calls first to find call IDs. For meeting prep, pass ALL call IDs from search_calls to get the full picture across meetings — key points and outlines contain specific discussion details, participant concerns, and decisions.",
     inputSchema: {
       type: "object",
       properties: {
@@ -448,7 +500,7 @@ function createMcpServer(): Server {
             query: a.query as string | undefined,
             fromDateTime: a.fromDateTime as string | undefined,
             toDateTime: a.toDateTime as string | undefined,
-            maxResults: Math.min((a.maxResults as number) ?? 10, 50),
+            maxResults: Math.min((a.maxResults as number) ?? 20, 50),
           });
           break;
 
