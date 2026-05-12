@@ -13,7 +13,6 @@ import dotenv from 'dotenv';
 import crypto from 'crypto';
 import { createServer } from 'node:http';
 
-// Redirect all console output to stderr
 const originalConsole = { ...console };
 console.log = (...args) => originalConsole.error(...args);
 console.info = (...args) => originalConsole.error(...args);
@@ -31,48 +30,6 @@ if (!GONG_ACCESS_KEY || !GONG_ACCESS_SECRET) {
   process.exit(1);
 }
 
-// Type definitions
-interface GongCall {
-  id: string;
-  title: string;
-  scheduled?: string;
-  started?: string;
-  duration?: number;
-  direction?: string;
-  system?: string;
-  scope?: string;
-  media?: string;
-  language?: string;
-  url?: string;
-}
-
-interface GongTranscript {
-  speakerId: string;
-  topic?: string;
-  sentences: Array<{
-    start: number;
-    text: string;
-  }>;
-}
-
-interface GongListCallsResponse {
-  calls: GongCall[];
-}
-
-interface GongRetrieveTranscriptsResponse {
-  transcripts: GongTranscript[];
-}
-
-interface GongListCallsArgs {
-  [key: string]: string | undefined;
-  fromDateTime?: string;
-  toDateTime?: string;
-}
-
-interface GongRetrieveTranscriptsArgs {
-  callIds: string[];
-}
-
 // Gong API Client
 class GongClient {
   private accessKey: string;
@@ -83,183 +40,344 @@ class GongClient {
     this.accessSecret = accessSecret;
   }
 
-  private async generateSignature(method: string, path: string, timestamp: string, params?: unknown): Promise<string> {
-    const stringToSign = `${method}\n${path}\n${timestamp}\n${params ? JSON.stringify(params) : ''}`;
-    const encoder = new TextEncoder();
-    const keyData = encoder.encode(this.accessSecret);
-    const messageData = encoder.encode(stringToSign);
-    
-    const cryptoKey = await crypto.subtle.importKey(
-      'raw',
-      keyData,
-      { name: 'HMAC', hash: 'SHA-256' },
-      false,
-      ['sign']
-    );
-    
-    const signature = await crypto.subtle.sign(
-      'HMAC',
-      cryptoKey,
-      messageData
-    );
-    
-    return btoa(String.fromCharCode(...new Uint8Array(signature)));
+  private get authHeader(): string {
+    return `Basic ${Buffer.from(`${this.accessKey}:${this.accessSecret}`).toString('base64')}`;
   }
 
-  private async request<T>(method: string, path: string, params?: Record<string, string | undefined>, data?: Record<string, unknown>): Promise<T> {
-    const timestamp = new Date().toISOString();
-    const url = `${GONG_API_URL}${path}`;
-    
-    const response = await axios({
-      method,
-      url,
+  private async get<T>(path: string, params?: Record<string, string>): Promise<T> {
+    const response = await axios.get(`${GONG_API_URL}${path}`, {
       params,
-      data,
       headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Basic ${Buffer.from(`${this.accessKey}:${this.accessSecret}`).toString('base64')}`,
-        'X-Gong-AccessKey': this.accessKey,
-        'X-Gong-Timestamp': timestamp,
-        'X-Gong-Signature': await this.generateSignature(method, path, timestamp, data || params)
-      }
+        'Authorization': this.authHeader,
+      },
     });
-
     return response.data as T;
   }
 
-  async listCalls(fromDateTime?: string, toDateTime?: string): Promise<GongListCallsResponse> {
-    const params: GongListCallsArgs = {};
-    if (fromDateTime) params.fromDateTime = fromDateTime;
-    if (toDateTime) params.toDateTime = toDateTime;
-
-    return this.request<GongListCallsResponse>('GET', '/calls', params);
+  private async post<T>(path: string, data?: Record<string, unknown>): Promise<T> {
+    const response = await axios.post(`${GONG_API_URL}${path}`, data, {
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': this.authHeader,
+      },
+    });
+    return response.data as T;
   }
 
-  async retrieveTranscripts(callIds: string[]): Promise<GongRetrieveTranscriptsResponse> {
-    return this.request<GongRetrieveTranscriptsResponse>('POST', '/calls/transcript', undefined, {
-      filter: {
-        callIds,
-        includeEntities: true,
-        includeInteractionsSummary: true,
-        includeTrackers: true
-      }
+  async listCalls(fromDateTime?: string, toDateTime?: string) {
+    const params: Record<string, string> = {};
+    if (fromDateTime) params.fromDateTime = fromDateTime;
+    if (toDateTime) params.toDateTime = toDateTime;
+    return this.get('/calls', params);
+  }
+
+  async getCallDetails(callIds: string[]) {
+    return this.post('/calls/extensive', {
+      filter: { callIds },
+      contentSelector: {
+        exposedFields: {
+          content: {
+            structure: true,
+            topics: true,
+            trackers: true,
+            pointsOfInterest: true,
+            brief: true,
+            outline: true,
+            callOutcome: true,
+            keyPoints: true,
+            actionItems: true,
+          },
+          collaboration: {
+            publicComments: true,
+          },
+          parties: true,
+          interaction: {
+            interactionStats: true,
+            video: true,
+            questions: true,
+            speakers: true,
+          },
+          media: true,
+        },
+      },
     });
+  }
+
+  async retrieveTranscripts(callIds: string[]) {
+    return this.post('/calls/transcript', {
+      filter: { callIds },
+    });
+  }
+
+  async listUsers() {
+    return this.get('/users');
+  }
+
+  async getUser(userId: string) {
+    return this.get(`/users/${userId}`);
+  }
+
+  async getScorecardDefinitions() {
+    return this.get('/settings/scorecards');
+  }
+
+  async getAnsweredScorecards(filter: {
+    callFromDate?: string;
+    callToDate?: string;
+    scorecardIds?: string[];
+    reviewedUserIds?: string[];
+  }) {
+    return this.post('/stats/activity/scorecards', { filter });
+  }
+
+  async getInteractionStats(filter: {
+    fromDate: string;
+    toDate: string;
+    userIds?: string[];
+  }) {
+    return this.post('/stats/interaction', { filter });
+  }
+
+  async getAggregateActivity(filter: {
+    fromDate: string;
+    toDate: string;
+    userIds?: string[];
+  }) {
+    return this.post('/stats/activity/aggregate', { filter });
   }
 }
 
 const gongClient = new GongClient(GONG_ACCESS_KEY, GONG_ACCESS_SECRET);
 
 // Tool definitions
-const LIST_CALLS_TOOL: Tool = {
-  name: "list_calls",
-  description: "List Gong calls with optional date range filtering. Returns call details including ID, title, start/end times, participants, and duration.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      fromDateTime: {
-        type: "string",
-        description: "Start date/time in ISO format (e.g. 2024-03-01T00:00:00Z)"
-      },
-      toDateTime: {
-        type: "string",
-        description: "End date/time in ISO format (e.g. 2024-03-31T23:59:59Z)"
-      }
-    }
-  }
-};
 
-const RETRIEVE_TRANSCRIPTS_TOOL: Tool = {
-  name: "retrieve_transcripts",
-  description: "Retrieve transcripts for specified call IDs. Returns detailed transcripts including speaker IDs, topics, and timestamped sentences.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      callIds: {
-        type: "array",
-        items: { type: "string" },
-        description: "Array of Gong call IDs to retrieve transcripts for"
-      }
+const TOOLS: Tool[] = [
+  {
+    name: "list_calls",
+    description: "List Gong calls with optional date range filtering. Returns call metadata including ID, title, scheduled/start times, duration, direction, system, and URL.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        fromDateTime: {
+          type: "string",
+          description: "Start date/time in ISO format (e.g. 2024-03-01T00:00:00Z)",
+        },
+        toDateTime: {
+          type: "string",
+          description: "End date/time in ISO format (e.g. 2024-03-31T23:59:59Z)",
+        },
+      },
     },
-    required: ["callIds"]
-  }
-};
+  },
+  {
+    name: "get_call_details",
+    description: "Get detailed information for specific calls including participants, action items, key points, topics, trackers, talk ratios, questions asked, and collaboration comments. This is the richest call data endpoint — use it when you need more than basic metadata.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        callIds: {
+          type: "array",
+          items: { type: "string" },
+          description: "Array of Gong call IDs",
+        },
+      },
+      required: ["callIds"],
+    },
+  },
+  {
+    name: "retrieve_transcripts",
+    description: "Retrieve full transcripts for specified calls. Returns timestamped sentences with speaker IDs. Use get_call_details first if you just need key points or action items — transcripts are large and token-heavy.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        callIds: {
+          type: "array",
+          items: { type: "string" },
+          description: "Array of Gong call IDs to retrieve transcripts for",
+        },
+      },
+      required: ["callIds"],
+    },
+  },
+  {
+    name: "list_users",
+    description: "List all users in the Gong workspace. Returns user IDs, names, emails, and roles. Useful for mapping speaker/user IDs from calls to real people.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+    },
+  },
+  {
+    name: "get_user",
+    description: "Get details for a specific user by their Gong user ID.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        userId: {
+          type: "string",
+          description: "The Gong user ID",
+        },
+      },
+      required: ["userId"],
+    },
+  },
+  {
+    name: "get_scorecard_definitions",
+    description: "Retrieve all scorecard definitions configured in Gong. Returns scorecard names, questions, and scoring criteria. Use this to understand what scorecards exist before querying answered scorecards.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+    },
+  },
+  {
+    name: "get_answered_scorecards",
+    description: "Retrieve completed scorecard reviews for calls. Returns scores, answers, reviewer info, and timestamps. Filter by date range, specific scorecards, or reviewed users.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        callFromDate: {
+          type: "string",
+          description: "Filter by calls from this date (ISO format)",
+        },
+        callToDate: {
+          type: "string",
+          description: "Filter by calls up to this date (ISO format)",
+        },
+        scorecardIds: {
+          type: "array",
+          items: { type: "string" },
+          description: "Filter by specific scorecard IDs",
+        },
+        reviewedUserIds: {
+          type: "array",
+          items: { type: "string" },
+          description: "Filter by reviewed user IDs",
+        },
+      },
+    },
+  },
+  {
+    name: "get_interaction_stats",
+    description: "Retrieve interaction statistics for users — talk ratios, longest monologues, interactivity, patience, and engagement metrics. Requires a date range.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        fromDate: {
+          type: "string",
+          description: "Start date in ISO format (e.g. 2024-03-01T00:00:00Z)",
+        },
+        toDate: {
+          type: "string",
+          description: "End date in ISO format (e.g. 2024-03-31T23:59:59Z)",
+        },
+        userIds: {
+          type: "array",
+          items: { type: "string" },
+          description: "Optional list of user IDs to filter by",
+        },
+      },
+      required: ["fromDate", "toDate"],
+    },
+  },
+  {
+    name: "get_aggregate_activity",
+    description: "Retrieve aggregated activity stats for users — number of calls, emails, meetings, and other engagement metrics over a date range.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        fromDate: {
+          type: "string",
+          description: "Start date in ISO format (e.g. 2024-03-01T00:00:00Z)",
+        },
+        toDate: {
+          type: "string",
+          description: "End date in ISO format (e.g. 2024-03-31T23:59:59Z)",
+        },
+        userIds: {
+          type: "array",
+          items: { type: "string" },
+          description: "Optional list of user IDs to filter by",
+        },
+      },
+      required: ["fromDate", "toDate"],
+    },
+  },
+];
 
 // Server implementation
 const server = new Server(
-  {
-    name: "example-servers/gong",
-    version: "0.1.0",
-  },
-  {
-    capabilities: {
-      tools: {},
-    },
-  },
+  { name: "gong-mcp", version: "0.2.0" },
+  { capabilities: { tools: {} } },
 );
 
-// Type guards
-function isGongListCallsArgs(args: unknown): args is GongListCallsArgs {
-  return (
-    typeof args === "object" &&
-    args !== null &&
-    (!("fromDateTime" in args) || typeof (args as GongListCallsArgs).fromDateTime === "string") &&
-    (!("toDateTime" in args) || typeof (args as GongListCallsArgs).toDateTime === "string")
-  );
-}
-
-function isGongRetrieveTranscriptsArgs(args: unknown): args is GongRetrieveTranscriptsArgs {
-  return (
-    typeof args === "object" &&
-    args !== null &&
-    "callIds" in args &&
-    Array.isArray((args as GongRetrieveTranscriptsArgs).callIds) &&
-    (args as GongRetrieveTranscriptsArgs).callIds.every(id => typeof id === "string")
-  );
-}
-
-// Tool handlers
-server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: [LIST_CALLS_TOOL, RETRIEVE_TRANSCRIPTS_TOOL],
-}));
+server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
 
 server.setRequestHandler(CallToolRequestSchema, async (request: { params: { name: string; arguments?: unknown } }) => {
   try {
     const { name, arguments: args } = request.params;
+    const a = (args ?? {}) as Record<string, unknown>;
 
-    if (!args) {
-      throw new Error("No arguments provided");
-    }
+    let response: unknown;
 
     switch (name) {
-      case "list_calls": {
-        if (!isGongListCallsArgs(args)) {
-          throw new Error("Invalid arguments for list_calls");
-        }
-        const { fromDateTime, toDateTime } = args;
-        const response = await gongClient.listCalls(fromDateTime, toDateTime);
-        return {
-          content: [{ 
-            type: "text", 
-            text: JSON.stringify(response, null, 2)
-          }],
-          isError: false,
-        };
-      }
+      case "list_calls":
+        response = await gongClient.listCalls(
+          a.fromDateTime as string | undefined,
+          a.toDateTime as string | undefined,
+        );
+        break;
 
-      case "retrieve_transcripts": {
-        if (!isGongRetrieveTranscriptsArgs(args)) {
-          throw new Error("Invalid arguments for retrieve_transcripts");
-        }
-        const { callIds } = args;
-        const response = await gongClient.retrieveTranscripts(callIds);
-        return {
-          content: [{ 
-            type: "text", 
-            text: JSON.stringify(response, null, 2)
-          }],
-          isError: false,
-        };
-      }
+      case "get_call_details":
+        if (!Array.isArray(a.callIds)) throw new Error("callIds must be an array of strings");
+        response = await gongClient.getCallDetails(a.callIds as string[]);
+        break;
+
+      case "retrieve_transcripts":
+        if (!Array.isArray(a.callIds)) throw new Error("callIds must be an array of strings");
+        response = await gongClient.retrieveTranscripts(a.callIds as string[]);
+        break;
+
+      case "list_users":
+        response = await gongClient.listUsers();
+        break;
+
+      case "get_user":
+        if (typeof a.userId !== "string") throw new Error("userId is required");
+        response = await gongClient.getUser(a.userId);
+        break;
+
+      case "get_scorecard_definitions":
+        response = await gongClient.getScorecardDefinitions();
+        break;
+
+      case "get_answered_scorecards":
+        response = await gongClient.getAnsweredScorecards({
+          callFromDate: a.callFromDate as string | undefined,
+          callToDate: a.callToDate as string | undefined,
+          scorecardIds: a.scorecardIds as string[] | undefined,
+          reviewedUserIds: a.reviewedUserIds as string[] | undefined,
+        });
+        break;
+
+      case "get_interaction_stats":
+        if (typeof a.fromDate !== "string" || typeof a.toDate !== "string")
+          throw new Error("fromDate and toDate are required");
+        response = await gongClient.getInteractionStats({
+          fromDate: a.fromDate,
+          toDate: a.toDate,
+          userIds: a.userIds as string[] | undefined,
+        });
+        break;
+
+      case "get_aggregate_activity":
+        if (typeof a.fromDate !== "string" || typeof a.toDate !== "string")
+          throw new Error("fromDate and toDate are required");
+        response = await gongClient.getAggregateActivity({
+          fromDate: a.fromDate,
+          toDate: a.toDate,
+          userIds: a.userIds as string[] | undefined,
+        });
+        break;
 
       default:
         return {
@@ -267,14 +385,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request: { params: { name
           isError: true,
         };
     }
-  } catch (error) {
+
     return {
-      content: [
-        {
-          type: "text",
-          text: `Error: ${error instanceof Error ? error.message : String(error)}`,
-        },
-      ],
+      content: [{ type: "text", text: JSON.stringify(response, null, 2) }],
+      isError: false,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      content: [{ type: "text", text: `Error: ${message}` }],
       isError: true,
     };
   }
@@ -331,4 +450,4 @@ async function runServer() {
 runServer().catch((error) => {
   console.error("Fatal error running server:", error);
   process.exit(1);
-}); 
+});

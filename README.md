@@ -1,11 +1,15 @@
 # Gong MCP Server
 
-An MCP server that provides access to Gong's API for retrieving call recordings and transcripts.
+An MCP server that provides access to Gong's API for call data, transcripts, user info, scorecards, and activity stats.
 
 ## Features
 
-- List Gong calls with optional date range filtering
-- Retrieve detailed transcripts for specific calls
+- List and search Gong calls with date filtering
+- Get rich call details: participants, action items, key points, topics, talk ratios
+- Retrieve full call transcripts
+- Look up users and map speaker IDs to names
+- Pull scorecard definitions and completed reviews
+- Get interaction stats and aggregate activity metrics
 - Runs locally (stdio) or as a remote HTTP server (Railway, Docker, etc.)
 - Bearer token authentication for remote deployments
 
@@ -81,19 +85,46 @@ Share the Railway URL and `MCP_API_KEY` with your team. Each person adds this to
 ## Available Tools
 
 ### list_calls
+List Gong calls with optional date range filtering.
+- `fromDateTime` (string, optional) — Start date/time in ISO format
+- `toDateTime` (string, optional) — End date/time in ISO format
 
-List Gong calls with optional date range filtering. Returns call details including ID, title, start/end times, participants, and duration.
-
-**Parameters:**
-- `fromDateTime` (string, optional) — Start date/time in ISO format (e.g. `2024-03-01T00:00:00Z`)
-- `toDateTime` (string, optional) — End date/time in ISO format (e.g. `2024-03-31T23:59:59Z`)
+### get_call_details
+Get rich call data including participants, action items, key points, topics, trackers, talk ratios, and questions. Use this over `retrieve_transcripts` when you need structured insights rather than raw text.
+- `callIds` (string[], required)
 
 ### retrieve_transcripts
+Retrieve full timestamped transcripts with speaker IDs. Token-heavy — prefer `get_call_details` for summaries.
+- `callIds` (string[], required)
 
-Retrieve transcripts for specified call IDs. Returns detailed transcripts including speaker IDs, topics, and timestamped sentences.
+### list_users
+List all users in the Gong workspace with IDs, names, emails, and roles.
 
-**Parameters:**
-- `callIds` (string[], required) — Array of Gong call IDs to retrieve transcripts for
+### get_user
+Get details for a specific user.
+- `userId` (string, required)
+
+### get_scorecard_definitions
+Retrieve all scorecard definitions (names, questions, scoring criteria).
+
+### get_answered_scorecards
+Retrieve completed scorecard reviews with scores and answers.
+- `callFromDate` (string, optional)
+- `callToDate` (string, optional)
+- `scorecardIds` (string[], optional)
+- `reviewedUserIds` (string[], optional)
+
+### get_interaction_stats
+Get interaction metrics: talk ratios, longest monologues, interactivity, patience.
+- `fromDate` (string, required)
+- `toDate` (string, required)
+- `userIds` (string[], optional)
+
+### get_aggregate_activity
+Get aggregated activity: call counts, feedback given/received, listening stats.
+- `fromDate` (string, required)
+- `toDate` (string, required)
+- `userIds` (string[], optional)
 
 ## License
 
