@@ -90,44 +90,43 @@ Claude will discover the OAuth endpoints automatically via `/.well-known/oauth-p
 
 ## Available Tools
 
-### list_calls
-List Gong calls with optional date range filtering.
-- `fromDateTime` (string, optional) — Start date/time in ISO format
-- `toDateTime` (string, optional) — End date/time in ISO format
+### search_calls
+Search Gong calls by keyword — matches titles, participant names, emails, and company names. Returns results sorted newest-first. Defaults to last 90 days.
+- `query` (string, optional) — Search terms (e.g. "Edmunds", "Sarah demo", "Acme Corp")
+- `fromDateTime` (string, optional) — Start of date range in ISO format
+- `toDateTime` (string, optional) — End of date range in ISO format
+- `maxResults` (number, optional) — Max results to return (default 10, max 50)
 
 ### get_call_details
-Get rich call data including participants, action items, key points, topics, trackers, talk ratios, and questions. Use this over `retrieve_transcripts` when you need structured insights rather than raw text.
+Get rich call data: participants, action items, key points, topics, trackers, talk ratios, questions, and comments. Use `search_calls` first to find call IDs.
 - `callIds` (string[], required)
 
 ### retrieve_transcripts
-Retrieve full timestamped transcripts with speaker IDs. Token-heavy — prefer `get_call_details` for summaries.
+Get full word-for-word transcripts with timestamps and speaker IDs. Token-heavy — prefer `get_call_details` for summaries.
 - `callIds` (string[], required)
 
-### list_users
-List all users in the Gong workspace with IDs, names, emails, and roles.
-
-### get_user
-Get details for a specific user.
-- `userId` (string, required)
+### search_users
+Find Gong users by name or email. Returns IDs, names, emails, and roles. Omit query to list all users.
+- `query` (string, optional) — Name or email to search for
 
 ### get_scorecard_definitions
-Retrieve all scorecard definitions (names, questions, scoring criteria).
+List all scorecard templates — names, questions, and scoring criteria.
 
 ### get_answered_scorecards
-Retrieve completed scorecard reviews with scores and answers.
+Get completed scorecard reviews with scores and answers.
 - `callFromDate` (string, optional)
 - `callToDate` (string, optional)
 - `scorecardIds` (string[], optional)
 - `reviewedUserIds` (string[], optional)
 
 ### get_interaction_stats
-Get interaction metrics: talk ratios, longest monologues, interactivity, patience.
+Get per-rep interaction metrics: talk ratios, longest monologues, interactivity, patience.
 - `fromDate` (string, required)
 - `toDate` (string, required)
 - `userIds` (string[], optional)
 
 ### get_aggregate_activity
-Get aggregated activity: call counts, feedback given/received, listening stats.
+Get aggregated activity counts: calls, emails, meetings, feedback, listening hours.
 - `fromDate` (string, required)
 - `toDate` (string, required)
 - `userIds` (string[], optional)

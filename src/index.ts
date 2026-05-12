@@ -78,6 +78,28 @@ function readBody(req: import('node:http').IncomingMessage): Promise<string> {
 }
 
 // Gong API Client
+interface GongCallSummary {
+  id: string;
+  title: string;
+  started?: string;
+  duration?: number;
+  direction?: string;
+  system?: string;
+  scope?: string;
+  url?: string;
+  [key: string]: unknown;
+}
+
+interface GongUser {
+  id: string;
+  firstName?: string;
+  lastName?: string;
+  emailAddress?: string;
+  [key: string]: unknown;
+}
+
+const MAX_SEARCH_PAGES = 30;
+
 class GongClient {
   private accessKey: string;
   private accessSecret: string;
@@ -94,28 +116,101 @@ class GongClient {
   private async get<T>(path: string, params?: Record<string, string>): Promise<T> {
     const response = await axios.get(`${GONG_API_URL}${path}`, {
       params,
-      headers: {
-        'Authorization': this.authHeader,
-      },
+      headers: { 'Authorization': this.authHeader },
     });
     return response.data as T;
   }
 
   private async post<T>(path: string, data?: Record<string, unknown>): Promise<T> {
     const response = await axios.post(`${GONG_API_URL}${path}`, data, {
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': this.authHeader,
-      },
+      headers: { 'Content-Type': 'application/json', 'Authorization': this.authHeader },
     });
     return response.data as T;
   }
 
-  async listCalls(fromDateTime?: string, toDateTime?: string) {
-    const params: Record<string, string> = {};
-    if (fromDateTime) params.fromDateTime = fromDateTime;
-    if (toDateTime) params.toDateTime = toDateTime;
-    return this.get('/calls', params);
+  private termsMatch(text: string, terms: string[]): boolean {
+    const lower = text.toLowerCase();
+    return terms.every(t => lower.includes(t));
+  }
+
+  async searchCalls(opts: {
+    query?: string;
+    fromDateTime?: string;
+    toDateTime?: string;
+    maxResults?: number;
+  }): Promise<{ matches: GongCallSummary[]; totalScanned: number; deepSearchIds?: string[] }> {
+    const maxResults = opts.maxResults ?? 10;
+    const terms = (opts.query ?? '').toLowerCase().split(/\s+/).filter(Boolean);
+    const from = opts.fromDateTime ?? new Date(Date.now() - 90 * 86400000).toISOString();
+    const to = opts.toDateTime ?? new Date().toISOString();
+
+    const titleMatches: GongCallSummary[] = [];
+    let cursor: string | undefined;
+    let totalScanned = 0;
+
+    for (let page = 0; page < MAX_SEARCH_PAGES; page++) {
+      const params: Record<string, string> = { fromDateTime: from, toDateTime: to };
+      if (cursor) params.cursor = cursor;
+
+      const data = await this.get<{ calls: GongCallSummary[]; records: { cursor?: string } }>('/calls', params);
+      totalScanned += data.calls.length;
+
+      if (terms.length > 0) {
+        for (const call of data.calls) {
+          if (this.termsMatch(call.title ?? '', terms)) {
+            titleMatches.push(call);
+          }
+        }
+      } else {
+        titleMatches.push(...data.calls);
+      }
+
+      if (titleMatches.length >= maxResults || !data.records.cursor) break;
+      cursor = data.records.cursor;
+    }
+
+    // Sort newest first
+    titleMatches.sort((a, b) => (b.started ?? '').localeCompare(a.started ?? ''));
+
+    if (terms.length > 0 && titleMatches.length === 0) {
+      // No title matches — collect IDs for deep search (parties/content)
+      // Re-scan and grab the most recent call IDs for a deeper check
+      const recentIds: string[] = [];
+      cursor = undefined;
+      for (let page = 0; page < MAX_SEARCH_PAGES && recentIds.length < 500; page++) {
+        const params: Record<string, string> = { fromDateTime: from, toDateTime: to };
+        if (cursor) params.cursor = cursor;
+        const data = await this.get<{ calls: GongCallSummary[]; records: { cursor?: string } }>('/calls', params);
+        recentIds.push(...data.calls.map(c => c.id));
+        if (!data.records.cursor) break;
+        cursor = data.records.cursor;
+      }
+
+      // Search parties in batches
+      const partyMatches: GongCallSummary[] = [];
+      for (let i = 0; i < recentIds.length && partyMatches.length < maxResults; i += 50) {
+        const batch = recentIds.slice(i, i + 50);
+        const details = await this.post<{ calls: Array<{ metaData: GongCallSummary; parties?: Array<{ name?: string; emailAddress?: string; company?: string }> }> }>('/calls/extensive', {
+          filter: { callIds: batch },
+          contentSelector: { exposedFields: { parties: true } },
+        });
+        for (const call of details.calls) {
+          const parties = call.parties ?? [];
+          const searchable = [
+            call.metaData.title ?? '',
+            ...parties.map(p => `${p.name ?? ''} ${p.emailAddress ?? ''} ${p.company ?? ''}`),
+          ].join(' ');
+          if (this.termsMatch(searchable, terms)) {
+            partyMatches.push(call.metaData);
+          }
+        }
+      }
+
+      partyMatches.sort((a, b) => (b.started ?? '').localeCompare(a.started ?? ''));
+      return { matches: partyMatches.slice(0, maxResults), totalScanned };
+    }
+
+    return { matches: titleMatches.slice(0, maxResults), totalScanned };
   }
 
   async getCallDetails(callIds: string[]) {
@@ -124,26 +219,13 @@ class GongClient {
       contentSelector: {
         exposedFields: {
           content: {
-            structure: true,
-            topics: true,
-            trackers: true,
-            pointsOfInterest: true,
-            brief: true,
-            outline: true,
-            callOutcome: true,
-            keyPoints: true,
-            actionItems: true,
+            structure: true, topics: true, trackers: true,
+            pointsOfInterest: true, brief: true, outline: true,
+            callOutcome: true, keyPoints: true, actionItems: true,
           },
-          collaboration: {
-            publicComments: true,
-          },
+          collaboration: { publicComments: true },
           parties: true,
-          interaction: {
-            interactionStats: true,
-            video: true,
-            questions: true,
-            speakers: true,
-          },
+          interaction: { interactionStats: true, video: true, questions: true, speakers: true },
           media: true,
         },
       },
@@ -151,13 +233,18 @@ class GongClient {
   }
 
   async retrieveTranscripts(callIds: string[]) {
-    return this.post('/calls/transcript', {
-      filter: { callIds },
-    });
+    return this.post('/calls/transcript', { filter: { callIds } });
   }
 
-  async listUsers() {
-    return this.get('/users');
+  async searchUsers(query?: string): Promise<GongUser[]> {
+    const data = await this.get<{ users: GongUser[] }>('/users');
+    if (!query) return data.users;
+
+    const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+    return data.users.filter(u => {
+      const searchable = `${u.firstName ?? ''} ${u.lastName ?? ''} ${u.emailAddress ?? ''}`.toLowerCase();
+      return terms.every(t => searchable.includes(t));
+    });
   }
 
   async getUser(userId: string) {
@@ -169,27 +256,17 @@ class GongClient {
   }
 
   async getAnsweredScorecards(filter: {
-    callFromDate?: string;
-    callToDate?: string;
-    scorecardIds?: string[];
-    reviewedUserIds?: string[];
+    callFromDate?: string; callToDate?: string;
+    scorecardIds?: string[]; reviewedUserIds?: string[];
   }) {
     return this.post('/stats/activity/scorecards', { filter });
   }
 
-  async getInteractionStats(filter: {
-    fromDate: string;
-    toDate: string;
-    userIds?: string[];
-  }) {
+  async getInteractionStats(filter: { fromDate: string; toDate: string; userIds?: string[] }) {
     return this.post('/stats/interaction', { filter });
   }
 
-  async getAggregateActivity(filter: {
-    fromDate: string;
-    toDate: string;
-    userIds?: string[];
-  }) {
+  async getAggregateActivity(filter: { fromDate: string; toDate: string; userIds?: string[] }) {
     return this.post('/stats/activity/aggregate', { filter });
   }
 }
@@ -200,25 +277,48 @@ const gongClient = new GongClient(GONG_ACCESS_KEY, GONG_ACCESS_SECRET);
 
 const TOOLS: Tool[] = [
   {
-    name: "list_calls",
-    description: "List Gong calls with optional date range filtering. Returns call metadata including ID, title, scheduled/start times, duration, direction, system, and URL.",
+    name: "search_calls",
+    description: "Search Gong calls by keyword. Matches call titles first, then falls back to searching participant names, emails, and company names. Use this to find calls by account name, person, or topic. Returns call metadata sorted newest-first. Defaults to last 90 days if no date range is given. To get full details for a found call, pass its ID to get_call_details.",
     inputSchema: {
       type: "object",
       properties: {
+        query: {
+          type: "string",
+          description: "Search terms — matches against call titles, participant names, emails, and company names (e.g. 'Edmunds', 'Sarah demo', 'Acme Corp')",
+        },
         fromDateTime: {
           type: "string",
-          description: "Start date/time in ISO format (e.g. 2024-03-01T00:00:00Z)",
+          description: "Start of date range in ISO format (e.g. 2024-01-01T00:00:00Z). Defaults to 90 days ago.",
         },
         toDateTime: {
           type: "string",
-          description: "End date/time in ISO format (e.g. 2024-03-31T23:59:59Z)",
+          description: "End of date range in ISO format. Defaults to now.",
+        },
+        maxResults: {
+          type: "number",
+          description: "Maximum number of calls to return (default 10, max 50)",
         },
       },
     },
   },
   {
     name: "get_call_details",
-    description: "Get detailed information for specific calls including participants, action items, key points, topics, trackers, talk ratios, questions asked, and collaboration comments. This is the richest call data endpoint — use it when you need more than basic metadata.",
+    description: "Get rich details for one or more calls by ID: participants, action items, key points, topics, trackers, talk ratios, questions, and comments. Use search_calls first to find call IDs, then pass them here. This is the primary tool for answering questions about what happened on a call.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        callIds: {
+          type: "array",
+          items: { type: "string" },
+          description: "Array of Gong call IDs (from search_calls results)",
+        },
+      },
+      required: ["callIds"],
+    },
+  },
+  {
+    name: "retrieve_transcripts",
+    description: "Get the full word-for-word transcript of calls. Returns timestamped sentences with speaker IDs. Token-heavy — only use when the user needs exact quotes, specific phrasing, or full conversation flow. Prefer get_call_details for summaries and key points.",
     inputSchema: {
       type: "object",
       properties: {
@@ -232,45 +332,21 @@ const TOOLS: Tool[] = [
     },
   },
   {
-    name: "retrieve_transcripts",
-    description: "Retrieve full transcripts for specified calls. Returns timestamped sentences with speaker IDs. Use get_call_details first if you just need key points or action items — transcripts are large and token-heavy.",
+    name: "search_users",
+    description: "Find Gong users by name or email. Returns user IDs, names, emails, and roles. Use this to look up a rep before pulling their stats or scorecard reviews. With no query, returns all users.",
     inputSchema: {
       type: "object",
       properties: {
-        callIds: {
-          type: "array",
-          items: { type: "string" },
-          description: "Array of Gong call IDs to retrieve transcripts for",
-        },
-      },
-      required: ["callIds"],
-    },
-  },
-  {
-    name: "list_users",
-    description: "List all users in the Gong workspace. Returns user IDs, names, emails, and roles. Useful for mapping speaker/user IDs from calls to real people.",
-    inputSchema: {
-      type: "object",
-      properties: {},
-    },
-  },
-  {
-    name: "get_user",
-    description: "Get details for a specific user by their Gong user ID.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        userId: {
+        query: {
           type: "string",
-          description: "The Gong user ID",
+          description: "Name or email to search for (e.g. 'Sarah', 'john@company.com'). Omit to list all users.",
         },
       },
-      required: ["userId"],
     },
   },
   {
     name: "get_scorecard_definitions",
-    description: "Retrieve all scorecard definitions configured in Gong. Returns scorecard names, questions, and scoring criteria. Use this to understand what scorecards exist before querying answered scorecards.",
+    description: "List all scorecard templates configured in Gong — names, questions, and scoring criteria. Call this first to understand what scorecards exist before pulling completed reviews.",
     inputSchema: {
       type: "object",
       properties: {},
@@ -278,7 +354,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: "get_answered_scorecards",
-    description: "Retrieve completed scorecard reviews for calls. Returns scores, answers, reviewer info, and timestamps. Filter by date range, specific scorecards, or reviewed users.",
+    description: "Get completed scorecard reviews with scores and answers. Use search_users first to get user IDs for filtering by rep. Combine with get_scorecard_definitions to map scorecard IDs to names.",
     inputSchema: {
       type: "object",
       properties: {
@@ -293,34 +369,34 @@ const TOOLS: Tool[] = [
         scorecardIds: {
           type: "array",
           items: { type: "string" },
-          description: "Filter by specific scorecard IDs",
+          description: "Filter by specific scorecard IDs (from get_scorecard_definitions)",
         },
         reviewedUserIds: {
           type: "array",
           items: { type: "string" },
-          description: "Filter by reviewed user IDs",
+          description: "Filter by reviewed user IDs (from search_users)",
         },
       },
     },
   },
   {
     name: "get_interaction_stats",
-    description: "Retrieve interaction statistics for users — talk ratios, longest monologues, interactivity, patience, and engagement metrics. Requires a date range.",
+    description: "Get per-rep interaction metrics over a date range: talk ratio, longest monologue, interactivity, patience, and engagement. Use search_users first to get user IDs for filtering by specific reps.",
     inputSchema: {
       type: "object",
       properties: {
         fromDate: {
           type: "string",
-          description: "Start date in ISO format (e.g. 2024-03-01T00:00:00Z)",
+          description: "Start date in ISO format",
         },
         toDate: {
           type: "string",
-          description: "End date in ISO format (e.g. 2024-03-31T23:59:59Z)",
+          description: "End date in ISO format",
         },
         userIds: {
           type: "array",
           items: { type: "string" },
-          description: "Optional list of user IDs to filter by",
+          description: "User IDs to filter by (from search_users). Omit for all users.",
         },
       },
       required: ["fromDate", "toDate"],
@@ -328,22 +404,22 @@ const TOOLS: Tool[] = [
   },
   {
     name: "get_aggregate_activity",
-    description: "Retrieve aggregated activity stats for users — number of calls, emails, meetings, and other engagement metrics over a date range.",
+    description: "Get aggregated activity counts over a date range: total calls, emails, meetings, feedback given/received, listening hours. Use search_users first to get user IDs for filtering by specific reps.",
     inputSchema: {
       type: "object",
       properties: {
         fromDate: {
           type: "string",
-          description: "Start date in ISO format (e.g. 2024-03-01T00:00:00Z)",
+          description: "Start date in ISO format",
         },
         toDate: {
           type: "string",
-          description: "End date in ISO format (e.g. 2024-03-31T23:59:59Z)",
+          description: "End date in ISO format",
         },
         userIds: {
           type: "array",
           items: { type: "string" },
-          description: "Optional list of user IDs to filter by",
+          description: "User IDs to filter by (from search_users). Omit for all users.",
         },
       },
       required: ["fromDate", "toDate"],
@@ -367,11 +443,13 @@ function createMcpServer(): Server {
       let response: unknown;
 
       switch (name) {
-        case "list_calls":
-          response = await gongClient.listCalls(
-            a.fromDateTime as string | undefined,
-            a.toDateTime as string | undefined,
-          );
+        case "search_calls":
+          response = await gongClient.searchCalls({
+            query: a.query as string | undefined,
+            fromDateTime: a.fromDateTime as string | undefined,
+            toDateTime: a.toDateTime as string | undefined,
+            maxResults: Math.min((a.maxResults as number) ?? 10, 50),
+          });
           break;
 
         case "get_call_details":
@@ -384,13 +462,8 @@ function createMcpServer(): Server {
           response = await gongClient.retrieveTranscripts(a.callIds as string[]);
           break;
 
-        case "list_users":
-          response = await gongClient.listUsers();
-          break;
-
-        case "get_user":
-          if (typeof a.userId !== "string") throw new Error("userId is required");
-          response = await gongClient.getUser(a.userId);
+        case "search_users":
+          response = await gongClient.searchUsers(a.query as string | undefined);
           break;
 
         case "get_scorecard_definitions":
