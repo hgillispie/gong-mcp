@@ -26,6 +26,7 @@ An MCP server that provides access to Gong's API for call data, transcripts, use
 | `GONG_ACCESS_SECRET` | Yes | Gong API access secret |
 | `MCP_CLIENT_ID` | Yes (HTTP mode) | OAuth client ID for MCP client authentication |
 | `MCP_CLIENT_SECRET` | Yes (HTTP mode) | OAuth client secret for MCP client authentication |
+| `SERVER_URL` | Yes (HTTP mode) | Public URL of the server (e.g. `https://your-app.railway.app`). Used in OAuth discovery metadata. |
 | `PORT` | No | When set, starts an HTTP server instead of stdio. Railway sets this automatically. |
 
 ## Setup
@@ -63,47 +64,29 @@ For use as a local MCP server:
    - `GONG_ACCESS_SECRET` — your Gong API secret
    - `MCP_CLIENT_ID` — OAuth client ID (generate with `openssl rand -hex 16`)
    - `MCP_CLIENT_SECRET` — OAuth client secret (generate with `openssl rand -hex 32`)
+   - `SERVER_URL` — your Railway public URL (e.g. `https://builderio-gong-mcp.up.railway.app`)
 4. Railway auto-sets `PORT` and deploys using the Dockerfile
 5. Your server will be at `https://<your-app>.railway.app`
 
-### Authentication
+### Connecting from Claude
 
-The server uses OAuth 2.0 Client Credentials. Clients first exchange their credentials for a short-lived access token (1 hour TTL), then use that token for MCP requests.
+The server implements the MCP OAuth spec (RFC 9728 + RFC 8414), so Claude handles the token exchange automatically. When adding this as a remote MCP server in Claude, provide:
 
-**1. Get an access token:**
+- **Server URL:** `https://<your-app>.railway.app/mcp`
+- **Client ID:** your `MCP_CLIENT_ID` value
+- **Client Secret:** your `MCP_CLIENT_SECRET` value
 
-```bash
-curl -X POST https://<your-app>.railway.app/oauth/token \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "grant_type=client_credentials&client_id=<ID>&client_secret=<SECRET>"
-```
+Claude will discover the OAuth endpoints automatically via `/.well-known/oauth-protected-resource` and `/.well-known/oauth-authorization-server`.
 
-Response:
-```json
-{
-  "access_token": "...",
-  "token_type": "Bearer",
-  "expires_in": 3600
-}
-```
+### OAuth Endpoints
 
-**2. Use the token with MCP requests:**
-
-Share the Railway URL and client credentials with your team. MCP clients that support OAuth will handle the token exchange automatically. For manual config:
-
-```json
-{
-  "mcpServers": {
-    "gong": {
-      "type": "streamable-http",
-      "url": "https://<your-app>.railway.app/mcp",
-      "headers": {
-        "Authorization": "Bearer <access_token>"
-      }
-    }
-  }
-}
-```
+| Endpoint | Purpose |
+|---|---|
+| `/.well-known/oauth-protected-resource` | Protected Resource Metadata (RFC 9728) |
+| `/.well-known/oauth-authorization-server` | Authorization Server Metadata (RFC 8414) |
+| `/oauth/token` | Token endpoint (Client Credentials grant) |
+| `/mcp` | MCP endpoint (requires Bearer token) |
+| `/health` | Health check (no auth) |
 
 ## Available Tools
 

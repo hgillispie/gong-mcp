@@ -459,22 +459,50 @@ async function runServer() {
       sessionIdGenerator: () => crypto.randomUUID(),
     });
 
+    const serverUrl = process.env.SERVER_URL || `http://localhost:${port}`;
+
     const httpServer = createServer(async (req, res) => {
       const url = new URL(req.url || '/', `http://localhost:${port}`);
+      const json = (status: number, body: unknown, headers?: Record<string, string>) => {
+        res.writeHead(status, { 'Content-Type': 'application/json', ...headers });
+        res.end(JSON.stringify(body));
+      };
 
+      // Health check
       if (url.pathname === '/health') {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ status: 'ok' }));
+        json(200, { status: 'ok' });
         return;
       }
 
+      // RFC 9728: Protected Resource Metadata
+      if (url.pathname === '/.well-known/oauth-protected-resource') {
+        json(200, {
+          resource: `${serverUrl}/mcp`,
+          authorization_servers: [serverUrl],
+          bearer_methods_supported: ['header'],
+        });
+        return;
+      }
+
+      // RFC 8414: Authorization Server Metadata
+      if (url.pathname === '/.well-known/oauth-authorization-server') {
+        json(200, {
+          issuer: serverUrl,
+          token_endpoint: `${serverUrl}/oauth/token`,
+          grant_types_supported: ['client_credentials'],
+          token_endpoint_auth_methods_supported: ['client_secret_basic', 'client_secret_post'],
+          response_types_supported: [],
+        });
+        return;
+      }
+
+      // Token endpoint
       if (url.pathname === '/oauth/token' && req.method === 'POST') {
         const body = await readBody(req);
         const params = parseFormBody(body);
 
         if (params.grant_type !== 'client_credentials') {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'unsupported_grant_type' }));
+          json(400, { error: 'unsupported_grant_type' });
           return;
         }
 
@@ -497,22 +525,23 @@ async function runServer() {
         }
 
         if (!clientId || !clientSecret || !authenticateClient(clientId, clientSecret)) {
-          res.writeHead(401, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'invalid_client' }));
+          json(401, { error: 'invalid_client' });
           return;
         }
 
-        const tokenResponse = issueToken(clientId);
-        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-        res.end(JSON.stringify(tokenResponse));
+        json(200, issueToken(clientId), { 'Cache-Control': 'no-store' });
         return;
       }
 
+      // MCP endpoint with OAuth token validation
       if (url.pathname === '/mcp') {
         const auth = req.headers['authorization'] ?? '';
         const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
         if (!validateToken(token)) {
-          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.writeHead(401, {
+            'Content-Type': 'application/json',
+            'WWW-Authenticate': `Bearer resource_metadata="${serverUrl}/.well-known/oauth-protected-resource"`,
+          });
           res.end(JSON.stringify({ error: 'invalid_token' }));
           return;
         }
