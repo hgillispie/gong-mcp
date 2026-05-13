@@ -138,7 +138,7 @@ class GongClient {
     fromDateTime?: string;
     toDateTime?: string;
     maxResults?: number;
-  }): Promise<{ matches: unknown[]; totalScanned: number }> {
+  }): Promise<{ matches: unknown[]; totalMatches: number; totalScanned: number; truncated: boolean }> {
     const maxResults = opts.maxResults ?? 20;
     const terms = (opts.query ?? '').toLowerCase().split(/\s+/).filter(Boolean);
     const from = opts.fromDateTime ?? new Date(Date.now() - 90 * 86400000).toISOString();
@@ -199,10 +199,14 @@ class GongClient {
       }
 
       partyMatches.sort((a, b) => (b.started ?? '').localeCompare(a.started ?? ''));
-      return this.enrichSearchResults(partyMatches.slice(0, maxResults), totalScanned);
+      const totalPartyMatches = partyMatches.length;
+      const enriched = await this.enrichSearchResults(partyMatches.slice(0, maxResults), totalScanned);
+      return { ...enriched, totalMatches: totalPartyMatches, truncated: totalPartyMatches > maxResults };
     }
 
-    return this.enrichSearchResults(titleMatches.slice(0, maxResults), totalScanned);
+    const totalTitleMatches = titleMatches.length;
+    const enriched = await this.enrichSearchResults(titleMatches.slice(0, maxResults), totalScanned);
+    return { ...enriched, totalMatches: totalTitleMatches, truncated: totalTitleMatches > maxResults };
   }
 
   private async enrichSearchResults(
