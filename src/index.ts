@@ -396,7 +396,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: "search_users",
-    description: "Find Gong users by name or email. Returns user IDs, names, emails, and roles. Use this to look up a rep before pulling their stats or scorecard reviews. With no query, returns all users.",
+    description: "Find Gong users by name or email. Returns user IDs, names, emails, and titles. Use this to look up a rep before pulling their stats or scorecard reviews. With no query, returns all users. Note: most users do not have a job title set — if the user asks about a team or role (e.g. 'the SE team', 'all AEs'), ask them to name specific people rather than trying to infer roles from data.",
     inputSchema: {
       type: "object",
       properties: {
